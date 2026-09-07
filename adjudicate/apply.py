@@ -16,7 +16,12 @@ class Edit:
 
 
 def match_case(original: str, replacement: str) -> str:
-    """Give `replacement` the casing pattern of `original`."""
+    """Give `replacement` the casing pattern of `original`, unless the
+    replacement is already deliberately cased (it contains a capital), as
+    with abbreviations and names: "US" -> "United States", not "UNITED
+    STATES"; "us" -> "U.S." stays "U.S."."""
+    if any(ch.isupper() for ch in replacement):
+        return replacement
     if original.isupper() and len(original) > 1:
         return replacement.upper()
     if original[:1].isupper():

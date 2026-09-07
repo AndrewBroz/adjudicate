@@ -5,6 +5,9 @@ def test_match_case():
     assert match_case("colour", "color") == "color"
     assert match_case("Colour", "color") == "Color"
     assert match_case("COLOUR", "color") == "COLOR"
+    assert match_case("US", "United States") == "United States"     # deliberately cased
+    assert match_case("US", "U.S.") == "U.S."
+    assert match_case("labour", "Labor") == "Labor"
 
 
 def test_apply_multiple_on_one_line_preserves_offsets():
