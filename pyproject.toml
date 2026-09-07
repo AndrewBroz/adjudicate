@@ -1,6 +1,6 @@
 [project]
 name = "adjudicate"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bounded, auditable text edits chosen by a local language model: detector proposes, model picks, applier splices."
 requires-python = ">=3.11"
 dependencies = []

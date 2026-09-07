@@ -37,3 +37,10 @@ def test_link_text_and_parentheses_are_not_sentence_starts():
     text = "See the [Center for AI](https://x.y) and (Centre for Z) now.\n"
     assert not at_sentence_start(text, text.index("Center"))
     assert not at_sentence_start(text, text.index("Centre"))
+
+
+def test_html_entities_are_protected():
+    from adjudicate.context import protected_spans
+    text = "correct&#32;**bold** and &amp; and &nbsp;x\n"
+    spans = [text[s:e] for s, e in protected_spans(text)]
+    assert spans == ["&#32;", "&amp;", "&nbsp;"]
