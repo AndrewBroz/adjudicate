@@ -11,5 +11,6 @@ from .context import (at_sentence_start, inside_quotes, map_prose, paragraph_bou
 from .core import (Cache, Decision, Item, adjudicate, decide_batch, parse_response,  # noqa: F401
                    render_batch, system_prompt, DEFAULT_KEEP_RULE)
 from .llm import Endpoint, LLMError, resolve_endpoint, strip_thinking  # noqa: F401
+from .dictionary import known, known_anywhere  # noqa: F401
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"

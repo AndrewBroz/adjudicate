@@ -1,9 +1,9 @@
 [project]
 name = "adjudicate"
-version = "0.1.1"
+version = "0.2.0"
 description = "Bounded, auditable text edits chosen by a local language model: detector proposes, model picks, applier splices."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["spylls>=0.1.7"]
 
 [build-system]
 requires = ["hatchling"]
@@ -11,6 +11,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["adjudicate"]
+include = ["adjudicate/dict/*"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
