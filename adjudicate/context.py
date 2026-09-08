@@ -30,12 +30,18 @@ class _Unused:
         return {k: v for k, v in self.__dict__.items() if v}
 
 
-def protected_spans(text: str) -> list[tuple[int, int]]:
+def protected_spans(text: str, entities: bool = True) -> list[tuple[int, int]]:
+    """Spans no tool should edit: front matter, fenced and inline code, link
+    targets, URLs, HTML comments and tags, and (unless entities=False) HTML
+    entities."""
     spans = []
     m = _FRONT.match(text)
     if m:
         spans.append((0, m.end()))
-    for rx in (_FENCE, _INLINE_CODE, _LINK_DEST, _URL, _HTML_COMMENT, _HTML_TAG, _HTML_ENTITY):
+    rxs = [_FENCE, _INLINE_CODE, _LINK_DEST, _URL, _HTML_COMMENT, _HTML_TAG]
+    if entities:
+        rxs.append(_HTML_ENTITY)
+    for rx in rxs:
         spans.extend(m.span() for m in rx.finditer(text))
     spans.sort()
     merged: list[tuple[int, int]] = []

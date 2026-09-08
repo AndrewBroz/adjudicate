@@ -13,4 +13,4 @@ from .core import (Cache, Decision, Item, adjudicate, decide_batch, parse_respon
 from .llm import Endpoint, LLMError, resolve_endpoint, strip_thinking  # noqa: F401
 from .dictionary import known, known_anywhere  # noqa: F401
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
