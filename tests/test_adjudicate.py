@@ -17,8 +17,17 @@ def test_parse_response_variants():
 
 def test_render_batch():
     s = render_batch([item()])
-    assert 'Item 1 — word: "license" — options: licence | license | KEEP' in s
+    assert 'Item 1 — word: "license" — options: [1] licence | [2] license | KEEP' in s
     assert "Context: a [[license]] b" in s
+
+
+def test_match_choice():
+    from adjudicate.core import match_choice
+    opts = ("licence", " ten ", "KEEP")
+    assert match_choice("1", opts) == "licence" and match_choice("[2]", opts) == " ten "
+    assert match_choice("keep", opts) == "KEEP" and match_choice("ten", opts) == " ten "
+    assert match_choice("[1] licence", opts) == "licence"
+    assert match_choice("4", opts) is None and match_choice("bogus", opts) is None
 
 
 class FakeEndpoint(Endpoint):

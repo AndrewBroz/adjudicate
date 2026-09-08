@@ -17,9 +17,10 @@ from pathlib import Path
 from .llm import Endpoint, LLMError
 
 SYSTEM_TEMPLATE = """{task}
-For each item, choose exactly one option from its list, verbatim. {keep_rule}
+For each item, choose exactly one option from its numbered list. {keep_rule}
+Answer with the option's number (or the word KEEP); never retype or paraphrase the option text.
 Respond with JSON only, in this shape:
-{{"decisions": [{{"id": 1, "choice": "<one of the options, verbatim>", "confidence": 0.0, "reason": "<under 12 words>"}}]}}"""
+{{"decisions": [{{"id": 1, "choice": "<option number, or KEEP>", "confidence": 0.0, "reason": "<under 12 words>"}}]}}"""
 
 DEFAULT_KEEP_RULE = ("Choose KEEP when the marked text is already correct in context, is part of a "
                      "proper name, a title, a quotation, a URL or code, or when no option fits.")
@@ -94,11 +95,26 @@ class Cache:
 def render_batch(items: list[Item]) -> str:
     parts = []
     for it in items:
+        opts = " | ".join(o if o == "KEEP" else f"[{n}] {o}" for n, o in enumerate(it.options, 1))
         parts.append(
-            f"Item {it.id} — word: \"{it.word}\" — options: {' | '.join(it.options)}\n"
+            f"Item {it.id} — word: \"{it.word}\" — options: {opts}\n"
             f"Rule: {it.rule}\n"
             f"Context: {it.context}")
     return "\n\n".join(parts)
+
+
+def match_choice(choice: str, options: tuple[str, ...]) -> str | None:
+    """Resolve the model's answer to one option: by number ("2", "[2]"),
+    by the word KEEP, or by the option text (trimmed, case-insensitive)."""
+    c = str(choice).strip()
+    m = re.fullmatch(r"\[?(\d+)\]?", c)
+    if m:
+        n = int(m.group(1))
+        return options[n - 1] if 1 <= n <= len(options) else None
+    if c.upper() == "KEEP" and "KEEP" in options:
+        return "KEEP"
+    c = re.sub(r"^\[\d+\]\s*", "", c)
+    return next((o for o in options if o.strip().lower() == c.lower()), None)
 
 
 def parse_response(text: str) -> dict[int, dict]:
@@ -142,9 +158,7 @@ def decide_batch(ep: Endpoint, system: str, items: list[Item]) -> list[Decision]
             out.append(Decision(it, None, 0.0, "no answer from model"))
             continue
         choice = str(a.get("choice", "")).strip()
-        # Options may carry significant surrounding whitespace (" ten ");
-        # models strip it, so compare trimmed.
-        matched = next((o for o in it.options if o.strip().lower() == choice.lower()), None)
+        matched = match_choice(choice, it.options)
         try:
             conf = float(a.get("confidence", 0))
         except (TypeError, ValueError):
