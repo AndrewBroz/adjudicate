@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -53,3 +54,22 @@ def test_400_with_nothing_to_drop_raises(server):
     with pytest.raises(LLMError, match="HTTP 400"):
         Endpoint(server.url, "m").chat("s", "u")
     assert len(server.requests) == 2   # with response_format, then without it
+
+
+def test_concurrent_calls_with_strict_server(server):
+    """Regression test for race condition on _dropped set during concurrent calls."""
+    server.reject = {"chat_template_kwargs"}
+    ep = Endpoint(server.url, "m", thinking_switch=True)
+
+    def make_call():
+        return ep.chat("s", "u")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: make_call(), range(8)))
+
+    # Every call should return the fake's reply
+    assert all(r == '{"decisions": []}' for r in results)
+    # Last request should lack chat_template_kwargs (dropped after first retry)
+    assert "chat_template_kwargs" not in server.requests[-1]
+    # All requests should have response_format
+    assert all("response_format" in b for b in server.requests)

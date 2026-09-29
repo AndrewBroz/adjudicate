@@ -51,8 +51,9 @@ class Endpoint:
             body["chat_template_kwargs"] = {"enable_thinking": self.think}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        for name in self._dropped:
-            body.pop(name, None)
+        for name in _OPTIONAL_FIELDS:
+            if name in self._dropped:
+                body.pop(name, None)
         req = urllib.request.Request(
             self.url.rstrip("/") + "/chat/completions",
             data=json.dumps(body).encode(), headers=self._headers())
