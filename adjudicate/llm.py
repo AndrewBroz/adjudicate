@@ -7,12 +7,19 @@ import os
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
 class LLMError(RuntimeError):
     pass
+
+
+DEFAULT_TIMEOUT = 120.0
+
+# Request fields a strict server may reject with 400/422, in the order they
+# are dropped on retry.
+_OPTIONAL_FIELDS = ("chat_template_kwargs", "response_format")
 
 
 @dataclass
@@ -22,7 +29,13 @@ class Endpoint:
     key: str = ""
     name: str = "custom"
     think: bool = False   # let reasoning models think before answering
-    timeout: float = 120.0
+    timeout: float = DEFAULT_TIMEOUT
+    thinking_switch: bool = False   # server honours chat_template_kwargs.enable_thinking
+    _dropped: set[str] = field(default_factory=set, init=False, repr=False, compare=False)
+
+    def _headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/json",
+                "Authorization": f"Bearer {self.key or 'none'}"}
 
     def chat(self, system: str, user: str, timeout: float | None = None,
              json_mode: bool = True) -> str:
@@ -32,24 +45,28 @@ class Endpoint:
             "temperature": 0,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
-            # Reasoning models spend tokens thinking; this task doesn't need it.
-            "chat_template_kwargs": {"enable_thinking": self.think},
         }
+        if self.think or self.thinking_switch:
+            # Reasoning models spend tokens thinking; this task doesn't need it.
+            body["chat_template_kwargs"] = {"enable_thinking": self.think}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        for name in self._dropped:
+            body.pop(name, None)
         req = urllib.request.Request(
             self.url.rstrip("/") + "/chat/completions",
-            data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self.key or 'none'}"},
-        )
+            data=json.dumps(body).encode(), headers=self._headers())
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.load(resp)
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:300]
-            if json_mode and e.code in (400, 422):
-                return self.chat(system, user, timeout, json_mode=False)
+            if e.code in (400, 422):
+                # A strict server rejecting an extension: drop it for the rest of the run.
+                for name in _OPTIONAL_FIELDS:
+                    if name in body:
+                        self._dropped.add(name)
+                        return self.chat(system, user, timeout, json_mode)
             raise LLMError(f"{self.name} returned HTTP {e.code}: {detail}") from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise LLMError(f"cannot reach {self.name} at {self.url}: {e}") from e
@@ -62,7 +79,7 @@ class Endpoint:
     def reachable(self, timeout: float = 3.0) -> bool:
         req = urllib.request.Request(
             self.url.rstrip("/") + "/models",
-            headers={"Authorization": f"Bearer {self.key or 'none'}"})
+            headers=self._headers())
         try:
             with urllib.request.urlopen(req, timeout=timeout):
                 return True
