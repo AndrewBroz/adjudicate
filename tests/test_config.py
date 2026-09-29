@@ -1,6 +1,9 @@
+import os
+
 import pytest
 
-from adjudicate.llm import ConfigError, merge_layers, resolve_endpoint
+from adjudicate.llm import (ConfigError, Endpoint, list_models_detail, merge_layers,
+                            resolve_endpoint)
 
 
 def write(xdg, name, body):
@@ -146,6 +149,102 @@ def test_invalid_toml_names_the_file(isolated_llm_config):
     with pytest.raises(ConfigError, match="not valid TOML") as e:
         resolve_endpoint("stylefix")
     assert str(path) in str(e.value)
+
+
+def test_non_utf8_file_names_the_file(isolated_llm_config):
+    path = isolated_llm_config / "adjudicate" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'[llm]\nmodel = "\xff"\n')
+    with pytest.raises(ConfigError, match="cannot read") as e:
+        resolve_endpoint("stylefix")
+    assert str(path) in str(e.value)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads anything")
+def test_unreadable_file_names_the_file(isolated_llm_config):
+    path = write(isolated_llm_config, "adjudicate", '[llm]\nurl = "http://a/v1"\n')
+    os.chmod(path, 0)
+    try:
+        with pytest.raises(ConfigError, match="cannot read") as e:
+            resolve_endpoint("stylefix")
+    finally:
+        os.chmod(path, 0o644)
+    assert str(path) in str(e.value)
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "0.0"])
+def test_timeout_must_be_positive_in_config(isolated_llm_config, value):
+    path = write(isolated_llm_config, "adjudicate",
+                 f'[llm]\nurl = "http://a/v1"\nmodel = "m"\ntimeout = {value}\n')
+    with pytest.raises(ConfigError, match="timeout") as e:
+        resolve_endpoint("stylefix")
+    assert str(path) in str(e.value)
+
+
+@pytest.mark.parametrize("key", ["url", "model", "api_key", "api_key_env"])
+def test_empty_string_in_config_is_an_error(isolated_llm_config, key):
+    write(isolated_llm_config, "adjudicate", f'[llm]\n{key} = ""\n')
+    with pytest.raises(ConfigError, match=f"{key} is empty"):
+        resolve_endpoint("stylefix")
+
+
+@pytest.mark.parametrize("value", [0, -1, 0.0])
+def test_timeout_argument_must_be_positive(value):
+    with pytest.raises(ConfigError, match="--timeout"):
+        resolve_endpoint("stylefix", url="http://a/v1", model="m", timeout=value)
+
+
+def test_empty_string_arguments_are_unset(isolated_llm_config):
+    write(isolated_llm_config, "adjudicate", '[llm]\nurl = "http://a/v1"\nmodel = "m"\n')
+    ep = resolve_endpoint("stylefix", url="", model="", key="")
+    assert (ep.url, ep.model, ep.key) == ("http://a/v1", "m", "")
+
+
+# --- api_key_env through the merge --------------------------------------------
+
+def test_url_flag_discards_an_unset_api_key_env(isolated_llm_config):
+    write(isolated_llm_config, "adjudicate",
+          '[llm]\nurl = "http://shared/v1"\nmodel = "s"\napi_key_env = "NOT_SET_X"\n')
+    ep = resolve_endpoint("stylefix", url="http://other/v1", model="m")
+    assert (ep.url, ep.model, ep.key) == ("http://other/v1", "m", "")
+    assert "api_key" not in ep.sources
+
+
+def test_higher_key_supersedes_lower_api_key_env(isolated_llm_config, monkeypatch):
+    write(isolated_llm_config, "adjudicate",
+          '[llm]\nurl = "http://shared/v1"\nmodel = "s"\napi_key_env = "NOT_SET_X"\n')
+    monkeypatch.setenv("STYLEFIX_LLM_KEY", "k")
+    ep = resolve_endpoint("stylefix")
+    assert ep.key == "k" and ep.sources["api_key"] == "STYLEFIX_LLM_KEY"
+
+
+def test_higher_api_key_env_supersedes_lower_api_key(isolated_llm_config, monkeypatch):
+    write(isolated_llm_config, "adjudicate", '[llm]\nurl = "http://a/v1"\nmodel = "m"\napi_key = "low"\n')
+    path = write(isolated_llm_config, "stylefix", '[llm]\napi_key_env = "MY_KEY"\n')
+    monkeypatch.setenv("MY_KEY", "high")
+    ep = resolve_endpoint("stylefix")
+    assert ep.key == "high" and ep.sources["api_key"] == f"{path} (api_key_env MY_KEY)"
+
+
+def test_surviving_unset_api_key_env_names_the_variable(isolated_llm_config):
+    path = write(isolated_llm_config, "adjudicate",
+                 '[llm]\nurl = "http://a/v1"\nmodel = "m"\napi_key_env = "NOT_SET_X"\n')
+    write(isolated_llm_config, "stylefix", '[llm]\nmodel = "refined"\n')
+    with pytest.raises(ConfigError, match="NOT_SET_X") as e:
+        resolve_endpoint("stylefix")
+    assert str(path) in str(e.value)
+
+
+# --- listing failures ---------------------------------------------------------
+
+def test_list_models_detail_gives_the_reason(server):
+    ep = Endpoint(server.url, "")
+    assert list_models_detail(ep) == (["served-model"], "")
+    server.models_status = 401
+    models, why = list_models_detail(ep)
+    assert models is None and why.startswith("HTTP 401") and "down" in why
+    models, why = list_models_detail(Endpoint("http://127.0.0.1:9/v1", ""))
+    assert models is None and why
 
 
 def test_other_tables_are_ignored(isolated_llm_config):

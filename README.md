@@ -52,8 +52,10 @@ thinking_switch = false               # true for vLLM/LiteLLM serving a reasonin
 `thinking_switch = true` sends `chat_template_kwargs: {enable_thinking:
 false}`, which vLLM honours and strict APIs reject; if a server answers 400
 or 422 to it, it is dropped for the rest of the run. Unknown keys, wrong
-types, and an `api_key_env` naming an unset variable are errors
-(`ConfigError`), so a typo is never silently ignored.
+types, empty strings, a `timeout` that is not positive, and an
+`api_key_env` naming an unset variable are errors (`ConfigError`), so a typo
+is never silently ignored. An `api_key_env` is read only if it survives the
+merge: a higher layer's `url` or key discards it first.
 
 ## License
 

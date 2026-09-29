@@ -99,6 +99,29 @@ def test_unlistable_server_asks_to_continue(isolated_llm_config, server):
     assert not shared(isolated_llm_config).exists()
 
 
+def test_unlistable_server_says_why(isolated_llm_config, server):
+    server.models_status = 401
+    status, out = setup(["2", server.url, "3", "n"])
+    assert status == 1
+    assert f"could not list models at {server.url}/models: HTTP 401" in out
+    assert "down" in out                       # the start of the body
+
+
+def test_unreachable_server_says_why(isolated_llm_config):
+    status, out = setup(["3", "http://127.0.0.1:9/v1", "3", "n"])
+    assert status == 1
+    line = next(l for l in out.splitlines() if "could not list models" in l)
+    assert line.split("/models: ", 1)[1].strip()   # a reason follows
+
+
+def test_server_rejecting_only_response_format_keeps_thinking_switch(isolated_llm_config, server):
+    server.reject = {"response_format"}
+    status, out = setup(["3", server.url, "3", "1", "1"])
+    assert status == 0, out
+    assert llm(shared(isolated_llm_config))["thinking_switch"] is True
+    assert "response_format" not in server.requests[0]
+
+
 # --- keys -----------------------------------------------------------------------
 
 def test_pasted_key_is_saved_0600_and_never_shown(isolated_llm_config, server):
@@ -108,6 +131,68 @@ def test_pasted_key_is_saved_0600_and_never_shown(isolated_llm_config, server):
     assert llm(path)["api_key"] == "sekrit"
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert "sekrit" not in out
+
+
+def test_pasted_key_over_an_existing_0644_file(isolated_llm_config, server):
+    path = shared(isolated_llm_config)
+    path.parent.mkdir(parents=True)
+    path.write_text(OLD)
+    os.chmod(path, 0o644)
+    status, out = setup(["2", server.url, "2", "sekrit", "1", "1", "y"])
+    assert status == 0, out
+    assert llm(path)["api_key"] == "sekrit"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    left = sorted(p.name for p in path.parent.iterdir())
+    assert left == ["config.toml", "config.toml.bak"], left
+
+
+def test_saved_file_is_never_briefly_world_readable(isolated_llm_config, server, monkeypatch):
+    # The file is created with 0600 from the start: check the mode at the
+    # moment it takes the config's name.
+    import adjudicate.setup as setup_module
+    modes = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        modes.append(stat.S_IMODE(os.stat(src).st_mode))
+        return real_replace(src, dst)
+    monkeypatch.setattr(setup_module.os, "replace", spy)
+    status, out = setup(["2", server.url, "2", "sekrit", "1", "1"])
+    assert status == 0, out
+    assert modes == [0o600]
+
+
+def test_without_a_key_an_existing_mode_is_kept(isolated_llm_config, server):
+    path = shared(isolated_llm_config)
+    path.parent.mkdir(parents=True)
+    path.write_text(OLD)
+    os.chmod(path, 0o640)
+    status, out = setup(["3", server.url, "3", "1", "1", "y"])
+    assert status == 0, out
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o640
+
+
+def test_failed_write_leaves_no_temporary_file(isolated_llm_config, server, monkeypatch):
+    import adjudicate.setup as setup_module
+
+    def broken(src, dst):
+        raise OSError("disk full")
+    monkeypatch.setattr(setup_module.os, "replace", broken)
+    status, out = setup(["3", server.url, "3", "1", "1"])
+    assert status == 1 and "cannot write" in out and "disk full" in out
+    path = shared(isolated_llm_config)
+    assert list(path.parent.iterdir()) == []
+
+
+def test_unreadable_existing_file_is_not_edited(isolated_llm_config, server):
+    path = shared(isolated_llm_config)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"[llm]\nmodel = \"\xff\"\n")
+    status, out = setup(["3", server.url, "3", "1", "1"])
+    assert status == 1
+    assert f"{path}: cannot read" in out and "by hand" in out
+    assert path.read_bytes() == b"[llm]\nmodel = \"\xff\"\n"
+    assert not path.with_name("config.toml.bak").exists()
 
 
 def test_unset_env_key_warns(isolated_llm_config, server):
@@ -173,16 +258,37 @@ def test_end_of_input_cancels(isolated_llm_config):
 
 
 def test_refuses_without_a_terminal(isolated_llm_config):
-    out = io.StringIO()
-    assert run_setup("stylefix", io.StringIO(""), out) == 2
-    assert "terminal" in out.getvalue()
+    out, err = io.StringIO(), io.StringIO()
+    assert run_setup("stylefix", io.StringIO(""), out, err=err) == 2
+    assert "terminal" in err.getvalue() and out.getvalue() == ""
+
+
+def test_refusal_goes_to_stderr_by_default(isolated_llm_config, capsys):
+    assert run_setup("stylefix", io.StringIO("")) == 2
+    captured = capsys.readouterr()
+    assert "terminal" in captured.err and "terminal" not in captured.out
+
+
+def test_interrupt_during_the_closing_check_says_the_file_was_saved(
+        isolated_llm_config, server, monkeypatch):
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr("adjudicate.setup.check_endpoint", interrupted)
+    status, out = setup(["3", server.url, "3", "1", "1"])
+    path = shared(isolated_llm_config)
+    assert status == 1
+    assert f"Saved {path}; check interrupted." in out
+    assert "nothing was written" not in out
+    assert llm(path)["url"] == server.url
 
 
 # --- check_endpoint ---------------------------------------------------------------
 
 def check(**kw):
-    out = io.StringIO()
-    return check_endpoint("stylefix", out, **kw), out.getvalue()
+    """Run the check; returns (status, stdout and stderr together)."""
+    out, err = io.StringIO(), io.StringIO()
+    status = check_endpoint("stylefix", out, err=err, **kw)
+    return status, out.getvalue() + err.getvalue()
 
 
 def test_check_with_nothing_configured():
@@ -194,8 +300,18 @@ def test_check_config_error(isolated_llm_config):
     path = shared(isolated_llm_config)
     path.parent.mkdir(parents=True)
     path.write_text("[llm\n")
-    status, out = check()
-    assert status == 2 and str(path) in out
+    out, err = io.StringIO(), io.StringIO()
+    assert check_endpoint("stylefix", out, err=err) == 2
+    assert str(path) in err.getvalue() and out.getvalue() == ""
+
+
+def test_check_config_error_goes_to_stderr_by_default(isolated_llm_config, capsys):
+    path = shared(isolated_llm_config)
+    path.parent.mkdir(parents=True)
+    path.write_text("[llm\n")
+    assert check_endpoint("stylefix") == 2
+    captured = capsys.readouterr()
+    assert str(path) in captured.err and str(path) not in captured.out
 
 
 def test_check_prints_sources_and_hides_the_key(isolated_llm_config, server, monkeypatch):

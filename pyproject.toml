@@ -24,6 +24,12 @@ Issues = "https://github.com/AndrewBroz/adjudicate/issues"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Only what an sdist needs, so nothing ignored elsewhere (a global
+# gitignore, a nested one) can leak in.
+[tool.hatch.build.targets.sdist]
+only-include = ["adjudicate", "tests", "LICENSE", "README.md", "pyproject.toml"]
+exclude = ["__pycache__", "*.pyc"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["adjudicate"]
 include = ["adjudicate/dict/*"]

@@ -116,7 +116,9 @@ _CONFIG_KEYS: dict[str, tuple[type, ...]] = {
 }
 # Settings that belong to one server: a layer that names a url drops these
 # from the layers below it.
-_SERVER_KEYS = ("model", "api_key", "thinking_switch")
+_SERVER_KEYS = ("model", "api_key", "api_key_env", "thinking_switch")
+# The two ways to give a key: a layer that sets either drops both below it.
+_KEY_FORMS = ("api_key", "api_key_env")
 
 
 def config_home() -> Path:
@@ -124,12 +126,17 @@ def config_home() -> Path:
 
 
 def read_config(path: Path) -> dict:
-    """The validated [llm] table of a config file as {key: (value, source)},
-    with api_key_env resolved into api_key; {} if the file does not exist."""
+    """The validated [llm] table of a config file as {key: (value, source)};
+    {} if the file does not exist. api_key_env is kept unresolved, so a
+    higher layer's url or key can discard it before its variable is read."""
     if not path.exists():
         return {}
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"{path}: cannot read: {e}") from e
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: not valid TOML: {e}") from e
     table = data.get("llm", {})
@@ -143,16 +150,13 @@ def read_config(path: Path) -> dict:
         if not isinstance(v, types) or (isinstance(v, bool) and bool not in types):
             raise ConfigError(f"{path}: [llm] {k} must be "
                               f"{' or '.join(t.__name__ for t in types)}, not {v!r}")
+        if isinstance(v, str) and not v.strip():
+            raise ConfigError(f"{path}: [llm] {k} is empty; remove the line to leave it unset")
+        if k == "timeout" and v <= 0:
+            raise ConfigError(f"{path}: [llm] timeout must be a positive number of seconds, not {v!r}")
     if "api_key" in table and "api_key_env" in table:
         raise ConfigError(f"{path}: set api_key or api_key_env in [llm], not both")
-    src = str(path)
-    out = {k: (v, src) for k, v in table.items() if k != "api_key_env"}
-    if "api_key_env" in table:
-        var = table["api_key_env"]
-        if not os.environ.get(var):
-            raise ConfigError(f"{path}: api_key_env names {var}, which is not set")
-        out["api_key"] = (os.environ[var], f"{src} (api_key_env {var})")
-    return out
+    return {k: (v, str(path)) for k, v in table.items()}
 
 
 def env_layer(prefix: str) -> dict:
@@ -172,20 +176,53 @@ def merge_layers(layers: list[dict]) -> dict:
         if "url" in layer:
             for k in _SERVER_KEYS:
                 out.pop(k, None)
+        if any(k in layer for k in _KEY_FORMS):
+            for k in _KEY_FORMS:
+                out.pop(k, None)
         out.update(layer)
     return out
 
 
-def list_models(ep: Endpoint, timeout: float = 5.0) -> list[str] | None:
-    """Every model id the server lists at /models, or None if that fails."""
+def _resolve_key_env(settings: dict) -> dict:
+    """settings with a surviving api_key_env replaced by the key it names."""
+    if "api_key_env" not in settings:
+        return settings
+    settings = dict(settings)
+    var, src = settings.pop("api_key_env")
+    if not os.environ.get(var):
+        raise ConfigError(f"{src}: api_key_env names {var}, which is not set")
+    settings["api_key"] = (os.environ[var], f"{src} (api_key_env {var})")
+    return settings
+
+
+def list_models_detail(ep: Endpoint, timeout: float = 5.0) -> tuple[list[str] | None, str]:
+    """(every model id the server lists at /models, "") or, if that fails,
+    (None, why): the HTTP status and the start of the body, or the
+    connection error."""
     req = urllib.request.Request(ep.url.rstrip("/") + "/models", headers=ep._headers())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.load(resp)
-    except Exception:
-        return None
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode(errors="replace").strip()
+        except Exception:
+            body = ""
+        body = " ".join(body.split())[:200]
+        return None, f"HTTP {e.code}" + (f": {body}" if body else "")
+    except urllib.error.URLError as e:
+        return None, str(e.reason)
+    except ValueError as e:
+        return None, f"not a JSON response ({e})"
+    except Exception as e:
+        return None, str(e) or type(e).__name__
     items = data.get("data", []) if isinstance(data, dict) else []
-    return [m["id"] for m in items if isinstance(m, dict) and m.get("id")]
+    return [m["id"] for m in items if isinstance(m, dict) and m.get("id")], ""
+
+
+def list_models(ep: Endpoint, timeout: float = 5.0) -> list[str] | None:
+    """Every model id the server lists at /models, or None if that fails."""
+    return list_models_detail(ep, timeout)[0]
 
 
 def discover_model(ep: Endpoint, timeout: float = 5.0) -> str | None:
@@ -214,8 +251,14 @@ def resolve_endpoint(app: str, preset: str = "auto", url: str | None = None,
         return None
     if preset not in ("auto", "ollama"):
         raise ConfigError(f"unknown endpoint preset '{preset}' (choose auto, ollama or none)")
+    if timeout is not None and timeout <= 0:
+        raise ConfigError(f"--timeout must be a positive number of seconds, not {timeout!r}")
+    # Empty strings leave a setting unset, as empty variables do; a timeout is
+    # set whenever it is given.
     flags = {k: (v, _FLAG_SOURCE[k]) for k, v in
-             (("url", url), ("model", model), ("api_key", key), ("timeout", timeout)) if v}
+             (("url", url), ("model", model), ("api_key", key)) if v}
+    if timeout is not None:
+        flags["timeout"] = (timeout, _FLAG_SOURCE["timeout"])
     if preset == "ollama":
         settings = flags
     else:
@@ -227,6 +270,7 @@ def resolve_endpoint(app: str, preset: str = "auto", url: str | None = None,
             env_layer("ADJUDICATE"),
             read_config(home / "adjudicate" / "config.toml"),
         ])
+    settings = _resolve_key_env(settings)
     values = {k: v for k, (v, _) in settings.items()}
     sources = {"timeout": "default", "thinking_switch": "default",
                **{k: s for k, (_, s) in settings.items()}}

@@ -7,7 +7,9 @@ import getpass
 import json
 import os
 import re
+import secrets
 import shutil
+import stat
 import sys
 import time
 import tomllib
@@ -15,7 +17,7 @@ from pathlib import Path
 from typing import TextIO
 
 from .llm import (ConfigError, Endpoint, LLMError, config_home, list_models,
-                  ollama_endpoint, resolve_endpoint)
+                  list_models_detail, ollama_endpoint, resolve_endpoint)
 
 ROWS = ("url", "model", "api_key", "timeout", "thinking_switch")
 PING = 'Answer with the JSON object {"ok": true} and nothing else.'
@@ -124,12 +126,37 @@ def replace_llm_table(text: str, table: str) -> str | None:
     return new
 
 
+def _write_private(path: Path, text: str, mode: int) -> None:
+    """Write text to path atomically: a temporary file in the same
+    directory, created with mode (never wider), then renamed over path."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+    try:
+        try:
+            os.fchmod(fd, mode)          # exact, whatever the umask
+            os.write(fd, text.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def save_config(path: Path, values: dict, p: Prompter, secret: bool) -> bool:
     """Write values as the [llm] table of path, asking before replacing one."""
     out, table = p.out, llm_table(values)
     shown = llm_table(values, hide_key=True)
+    mode = 0o600 if secret else 0o644
     if path.exists():
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            out.write(f"{path}: cannot read: {e}; not editing it.\n"
+                      f"Add this to it by hand"
+                      f"{' (with your key in place of (hidden))' if secret else ''}:\n\n{shown}\n")
+            return False
         try:
             current = tomllib.loads(text).get("llm")
             new_text = replace_llm_table(text, table)
@@ -146,13 +173,21 @@ def save_config(path: Path, values: dict, p: Prompter, secret: bool) -> bool:
             if not p.confirm("Replace?", default=False):
                 out.write("Left unchanged.\n")
                 return False
-        shutil.copy2(path, path.with_name(path.name + ".bak"))
+        if not secret:
+            mode = stat.S_IMODE(path.stat().st_mode)     # keep what the user chose
+        try:
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        except OSError as e:
+            out.write(f"cannot back up {path}: {e}; not editing it.\n")
+            return False
     else:
-        path.parent.mkdir(parents=True, exist_ok=True)
         new_text = table
-    path.write_text(new_text, encoding="utf-8")
-    if secret:
-        os.chmod(path, 0o600)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_private(path, new_text, mode)
+    except OSError as e:
+        out.write(f"cannot write {path}: {e}\n")
+        return False
     out.write(f"Wrote {path}\n")
     return True
 
@@ -174,7 +209,7 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def _setup(app: str, p: Prompter) -> int:
+def _setup(app: str, p: Prompter, saved: list[Path], err: TextIO) -> int:
     out = p.out
     ollama = ollama_endpoint()
     ollama_models = (list_models(ollama) or []) if ollama else []
@@ -214,9 +249,9 @@ def _setup(app: str, p: Prompter) -> int:
         elif k == 1:
             ep.key = values["api_key"] = p.secret("API key")
             secret = True
-        models = list_models(ep)
+        models, why = list_models_detail(ep)
         if models is None:
-            out.write(f"  ✗ could not list models at {url}/models\n")
+            out.write(f"  ✗ could not list models at {url}/models: {why}\n")
             if not p.confirm("Continue anyway?", default=False):
                 return 1
             models = []
@@ -232,7 +267,9 @@ def _setup(app: str, p: Prompter) -> int:
     ep.thinking_switch = kind == 2
     t0 = time.monotonic()
     try:
-        ep.chat(PING, "ping", timeout=min(ep.timeout, 30))
+        # Without response_format, so a server that rejects only that field
+        # is not mistaken for one rejecting chat_template_kwargs.
+        ep.chat(PING, "ping", timeout=min(ep.timeout, 30), json_mode=False)
     except LLMError as e:
         out.write(f"✗\n  {e}\n")
         if not p.confirm("Save anyway?", default=False):
@@ -248,36 +285,45 @@ def _setup(app: str, p: Prompter) -> int:
     shared, own = config_home() / "adjudicate" / "config.toml", config_home() / app / "config.toml"
     where = p.choose("Save to:", [f"{shared} (shared by every tool that uses adjudicate)",
                                   f"{own} ({app} only)"])
-    if not save_config((shared, own)[where], values, p, secret):
+    path = (shared, own)[where]
+    if not save_config(path, values, p, secret):
         return 1
+    saved.append(path)
     out.write("\n")
-    return check_endpoint(app, out)
+    return check_endpoint(app, out, err=err)
 
 
 def run_setup(app: str, inp: TextIO | None = None, out: TextIO | None = None,
-              require_tty: bool = True) -> int:
-    """Ask where the model is, test it, and save the [llm] table."""
-    inp, out = inp or sys.stdin, out or sys.stdout
+              require_tty: bool = True, *, err: TextIO | None = None) -> int:
+    """Ask where the model is, test it, and save the [llm] table. The
+    refusal without a terminal, and a configuration error found by the
+    closing check, go to err (stderr by default)."""
+    inp, out, err = inp or sys.stdin, out or sys.stdout, err or sys.stderr
     if require_tty and not inp.isatty():
-        out.write(f"{app} --setup asks questions, so it needs a terminal. To configure "
+        err.write(f"{app} --setup asks questions, so it needs a terminal. To configure "
                   f"without one, write the [llm] table by hand (see `{app} --help`).\n")
         return 2
+    saved: list[Path] = []
     try:
-        return _setup(app, Prompter(inp, out))
+        return _setup(app, Prompter(inp, out), saved, err)
     except (SetupCancelled, KeyboardInterrupt):
-        out.write("\nSetup cancelled; nothing was written.\n")
+        if saved:
+            out.write(f"\nSaved {saved[0]}; check interrupted.\n")
+        else:
+            out.write("\nSetup cancelled; nothing was written.\n")
         return 1
 
 
 def check_endpoint(app: str, out: TextIO | None = None, preset: str = "auto",
                    url: str | None = None, model: str | None = None,
-                   timeout: float | None = None) -> int:
-    """Print each resolved setting and where it came from, then test the endpoint."""
-    out = out or sys.stdout
+                   timeout: float | None = None, *, err: TextIO | None = None) -> int:
+    """Print each resolved setting and where it came from, then test the
+    endpoint. A configuration error goes to err (stderr by default)."""
+    out, err = out or sys.stdout, err or sys.stderr
     try:
         ep = resolve_endpoint(app, preset, url=url, model=model, timeout=timeout)
     except ConfigError as e:
-        out.write(f"{app}: {e}\n")
+        err.write(f"{app}: {e}\n")
         return 2
     if ep is None:
         why = ("--llm none: no model is used." if preset == "none" else
