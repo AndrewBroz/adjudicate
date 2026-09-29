@@ -1,10 +1,11 @@
-"""Minimal OpenAI-compatible chat client plus endpoint presets."""
+"""Minimal OpenAI-compatible chat client, and endpoint resolution from flags, environment and config files."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -13,6 +14,10 @@ from pathlib import Path
 
 class LLMError(RuntimeError):
     pass
+
+
+class ConfigError(LLMError):
+    """An invalid endpoint setting; the message names the file or variable."""
 
 
 DEFAULT_TIMEOUT = 120.0
@@ -32,6 +37,7 @@ class Endpoint:
     timeout: float = DEFAULT_TIMEOUT
     thinking_switch: bool = False   # server honours chat_template_kwargs.enable_thinking
     _dropped: set[str] = field(default_factory=set, init=False, repr=False, compare=False)
+    sources: dict[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     def _headers(self) -> dict[str, str]:
         return {"Content-Type": "application/json",
@@ -93,31 +99,6 @@ def strip_thinking(text: str) -> str:
     return text.strip()
 
 
-def read_env_file(path: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    if not path.exists():
-        return out
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
-
-def dgx_endpoint() -> Endpoint | None:
-    """Endpoint for the dgx-llm LiteLLM gateway, read from its .env."""
-    env_dir = Path(os.environ.get("DGX_LLM_DIR", Path.home() / "Code" / "dgx-llm"))
-    env = read_env_file(env_dir / ".env")
-    host = env.get("DGX_HTTP_HOST")
-    if not host:
-        return None
-    return Endpoint(url=f"http://{host}:4000/v1",
-                    model=env.get("PRIMARY_MODEL_ALIAS", ""),
-                    key=env.get("LITELLM_MASTER_KEY", ""), name="dgx")
-
-
 def ollama_endpoint() -> Endpoint | None:
     url = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     try:
@@ -128,34 +109,150 @@ def ollama_endpoint() -> Endpoint | None:
     return Endpoint(url=url + "/v1", model=models[0] if models else "", name="ollama")
 
 
-def resolve_endpoint(preset: str, model: str | None = None, url: str | None = None,
-                     key: str | None = None, think: bool = False,
-                     timeout: float = 120.0) -> Endpoint | None:
-    """Pick an endpoint. Explicit args and STYLEFIX_LLM_* env vars win over presets.
+# [llm] keys and the types they accept.
+_CONFIG_KEYS: dict[str, tuple[type, ...]] = {
+    "url": (str,), "model": (str,), "api_key": (str,), "api_key_env": (str,),
+    "timeout": (int, float), "thinking_switch": (bool,),
+}
+# Settings that belong to one server: a layer that names a url drops these
+# from the layers below it.
+_SERVER_KEYS = ("model", "api_key", "thinking_switch")
 
-    preset: auto | dgx | ollama | none
+
+def config_home() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+
+
+def read_config(path: Path) -> dict:
+    """The validated [llm] table of a config file as {key: (value, source)},
+    with api_key_env resolved into api_key; {} if the file does not exist."""
+    if not path.exists():
+        return {}
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: not valid TOML: {e}") from e
+    table = data.get("llm", {})
+    if not isinstance(table, dict):
+        raise ConfigError(f"{path}: 'llm' must be a table")
+    for k, v in table.items():
+        if k not in _CONFIG_KEYS:
+            raise ConfigError(f"{path}: unknown key '{k}' in [llm] "
+                              f"(known: {', '.join(_CONFIG_KEYS)})")
+        types = _CONFIG_KEYS[k]
+        if not isinstance(v, types) or (isinstance(v, bool) and bool not in types):
+            raise ConfigError(f"{path}: [llm] {k} must be "
+                              f"{' or '.join(t.__name__ for t in types)}, not {v!r}")
+    if "api_key" in table and "api_key_env" in table:
+        raise ConfigError(f"{path}: set api_key or api_key_env in [llm], not both")
+    src = str(path)
+    out = {k: (v, src) for k, v in table.items() if k != "api_key_env"}
+    if "api_key_env" in table:
+        var = table["api_key_env"]
+        if not os.environ.get(var):
+            raise ConfigError(f"{path}: api_key_env names {var}, which is not set")
+        out["api_key"] = (os.environ[var], f"{src} (api_key_env {var})")
+    return out
+
+
+def env_layer(prefix: str) -> dict:
+    """Settings from <prefix>_LLM_URL, _MODEL and _KEY; empty values are unset."""
+    out = {}
+    for key, suffix in (("url", "URL"), ("model", "MODEL"), ("api_key", "KEY")):
+        name = f"{prefix}_LLM_{suffix}"
+        if os.environ.get(name):
+            out[key] = (os.environ[name], name)
+    return out
+
+
+def merge_layers(layers: list[dict]) -> dict:
+    """Merge {key: (value, source)} layers field by field, highest first."""
+    out: dict = {}
+    for layer in reversed(layers):
+        if "url" in layer:
+            for k in _SERVER_KEYS:
+                out.pop(k, None)
+        out.update(layer)
+    return out
+
+
+def list_models(ep: Endpoint, timeout: float = 5.0) -> list[str] | None:
+    """Every model id the server lists at /models, or None if that fails."""
+    req = urllib.request.Request(ep.url.rstrip("/") + "/models", headers=ep._headers())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception:
+        return None
+    items = data.get("data", []) if isinstance(data, dict) else []
+    return [m["id"] for m in items if isinstance(m, dict) and m.get("id")]
+
+
+def discover_model(ep: Endpoint, timeout: float = 5.0) -> str | None:
+    models = list_models(ep, timeout)
+    return models[0] if models else None
+
+
+_FLAG_SOURCE = {"url": "--url", "model": "--model", "api_key": "key argument",
+                "timeout": "--timeout"}
+
+
+def resolve_endpoint(app: str, preset: str = "auto", url: str | None = None,
+                     model: str | None = None, key: str | None = None,
+                     think: bool = False, timeout: float | None = None) -> Endpoint | None:
+    """The endpoint `app` should use, or None for no model.
+
+    preset: auto | ollama | none. For auto, settings come from, highest
+    first: the arguments, <APP>_LLM_* variables, ~/.config/<app>/config.toml,
+    ADJUDICATE_LLM_* variables, ~/.config/adjudicate/config.toml; with no
+    url anywhere, a local Ollama is used if one is running with a model.
+    ollama means local Ollama with only the arguments applied. The result's
+    `sources` says where each setting came from. Raises ConfigError for an
+    invalid setting or an endpoint with no usable model.
     """
-    url = url or os.environ.get("STYLEFIX_LLM_URL")
-    model = model or os.environ.get("STYLEFIX_LLM_MODEL")
-    key = key or os.environ.get("STYLEFIX_LLM_KEY")
     if preset == "none":
         return None
-    if url:
-        return Endpoint(url=url, model=model or "", key=key or "", name="custom",
-                        think=think, timeout=timeout)
-    candidates = {"dgx": [dgx_endpoint], "ollama": [ollama_endpoint],
-                  "auto": [dgx_endpoint, ollama_endpoint]}[preset]
-    for make in candidates:
-        ep = make()
+    if preset not in ("auto", "ollama"):
+        raise ConfigError(f"unknown endpoint preset '{preset}' (choose auto, ollama or none)")
+    flags = {k: (v, _FLAG_SOURCE[k]) for k, v in
+             (("url", url), ("model", model), ("api_key", key), ("timeout", timeout)) if v}
+    if preset == "ollama":
+        settings = flags
+    else:
+        home = config_home()
+        settings = merge_layers([
+            flags,
+            env_layer(app.upper()),
+            read_config(home / app / "config.toml"),
+            env_layer("ADJUDICATE"),
+            read_config(home / "adjudicate" / "config.toml"),
+        ])
+    values = {k: v for k, (v, _) in settings.items()}
+    sources = {"timeout": "default", "thinking_switch": "default",
+               **{k: s for k, (_, s) in settings.items()}}
+    t = float(values.get("timeout", DEFAULT_TIMEOUT))
+    if "url" in values:
+        ep = Endpoint(url=values["url"], model=values.get("model", ""),
+                      key=values.get("api_key", ""), think=think, timeout=t,
+                      thinking_switch=values.get("thinking_switch", False))
+    else:
+        ep = ollama_endpoint()
         if ep is None:
-            continue
-        if preset == "auto" and not ep.reachable():
-            continue
-        if model:
-            ep.model = model
-        if key:
-            ep.key = key
-        ep.think = think
-        ep.timeout = timeout
-        return ep
-    return None
+            return None
+        sources["url"] = "local Ollama"
+        if not values.get("model") and ep.model:
+            sources["model"] = "local Ollama"
+        ep.model = values.get("model") or ep.model
+        ep.key = values.get("api_key", "")
+        ep.think, ep.timeout = think, t
+        ep.thinking_switch = values.get("thinking_switch", False)
+    if not ep.model:
+        ep.model = discover_model(ep) or ""
+        sources["model"] = "listed by the server"
+    if not ep.model:
+        if ep.name == "ollama" and preset == "auto":
+            return None          # Ollama is running but has no model pulled
+        raise ConfigError(f"no model set for {ep.url} and the server lists none; "
+                          "set `model` in config.toml or pass --model")
+    ep.sources = sources
+    return ep
