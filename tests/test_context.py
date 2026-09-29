@@ -44,3 +44,13 @@ def test_html_entities_are_protected():
     text = "correct&#32;**bold** and &amp; and &nbsp;x\n"
     spans = [text[s:e] for s, e in protected_spans(text)]
     assert spans == ["&#32;", "&amp;", "&nbsp;"]
+
+
+def test_public_regex_names():
+    import adjudicate
+    from adjudicate import context
+    assert adjudicate.FENCE is context.FENCE is context._FENCE
+    assert adjudicate.FRONT_MATTER is context.FRONT_MATTER is context._FRONT
+    assert adjudicate.HTML_ENTITY is context.HTML_ENTITY is context._HTML_ENTITY
+    assert context.FRONT_MATTER.match("---\ntitle: x\n---\nbody")
+    assert context.HTML_ENTITY.fullmatch("&mdash;")

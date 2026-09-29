@@ -6,15 +6,17 @@ import re
 
 from dataclasses import dataclass  # noqa: F401
 
-_FENCE = re.compile(r"^(```|~~~)[^\n]*\n.*?^\1[ \t]*$", re.M | re.S)
+FENCE = re.compile(r"^(```|~~~)[^\n]*\n.*?^\1[ \t]*$", re.M | re.S)
 _INLINE_CODE = re.compile(r"(`+)[^`\n]*?\1")
 _LINK_DEST = re.compile(r"\]\([^)\s]*(?:\s+\"[^\"]*\")?\)")
 _URL = re.compile(r"<?(?:https?|ftp|mailto):[^\s>)]+>?")
-_FRONT = re.compile(r"\A---\n.*?\n---\n", re.S)
+FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _HTML_TAG = re.compile(r"</?[A-Za-z][^<>\n]*>")
-_HTML_ENTITY = re.compile(r"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
+HTML_ENTITY = re.compile(r"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
 
+# Pre-0.3 names, kept so an old consumer does not break mid-upgrade; removed in 0.4.
+_FENCE, _FRONT, _HTML_ENTITY = FENCE, FRONT_MATTER, HTML_ENTITY
 
 
 @dataclass
@@ -35,12 +37,12 @@ def protected_spans(text: str, entities: bool = True) -> list[tuple[int, int]]:
     targets, URLs, HTML comments and tags, and (unless entities=False) HTML
     entities."""
     spans = []
-    m = _FRONT.match(text)
+    m = FRONT_MATTER.match(text)
     if m:
         spans.append((0, m.end()))
-    rxs = [_FENCE, _INLINE_CODE, _LINK_DEST, _URL, _HTML_COMMENT, _HTML_TAG]
+    rxs = [FENCE, _INLINE_CODE, _LINK_DEST, _URL, _HTML_COMMENT, _HTML_TAG]
     if entities:
-        rxs.append(_HTML_ENTITY)
+        rxs.append(HTML_ENTITY)
     for rx in rxs:
         spans.extend(m.span() for m in rx.finditer(text))
     spans.sort()
