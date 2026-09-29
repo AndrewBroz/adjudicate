@@ -1,9 +1,24 @@
 [project]
 name = "adjudicate"
-version = "0.2.3"
-description = "Bounded, auditable text edits chosen by a local language model: detector proposes, model picks, applier splices."
+version = "0.3.0"
+description = "Bounded, auditable text edits chosen by a language model: detector proposes, model picks, applier splices."
+readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT AND LGPL-2.0-or-later AND LicenseRef-SCOWL"
+license-files = ["LICENSE", "adjudicate/dict/LICENSE-*.txt"]
+authors = [{ name = "Andrew Brož" }]
 dependencies = ["spylls>=0.1.7"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+[project.urls]
+Homepage = "https://github.com/AndrewBroz/adjudicate"
+Issues = "https://github.com/AndrewBroz/adjudicate/issues"
 
 [build-system]
 requires = ["hatchling"]

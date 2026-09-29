@@ -2,7 +2,7 @@
 
 A detector proposes a span and a short list of candidate replacements; the
 model picks one (or KEEP) from the sentence and a rule of thumb; the applier
-splices the choice in. Shared by stylefix and proofix.
+splices the choice in. The toolkit behind stylefix and proofix.
 """
 
 from .apply import Edit, apply_edits, line_offsets, match_case, to_offsets  # noqa: F401
@@ -15,4 +15,4 @@ from .llm import ConfigError, Endpoint, LLMError, resolve_endpoint, strip_thinki
 from .setup import check_endpoint, run_setup  # noqa: F401
 from .dictionary import known, known_anywhere  # noqa: F401
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
