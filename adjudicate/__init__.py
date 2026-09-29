@@ -12,6 +12,7 @@ from .context import (FENCE, FRONT_MATTER, HTML_ENTITY, at_sentence_start,  # no
 from .core import (Cache, Decision, Item, adjudicate, decide_batch, parse_response,  # noqa: F401
                    render_batch, system_prompt, DEFAULT_KEEP_RULE, match_choice)
 from .llm import ConfigError, Endpoint, LLMError, resolve_endpoint, strip_thinking  # noqa: F401
+from .setup import check_endpoint, run_setup  # noqa: F401
 from .dictionary import known, known_anywhere  # noqa: F401
 
 __version__ = "0.2.3"
