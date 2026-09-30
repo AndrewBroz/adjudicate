@@ -133,7 +133,8 @@ def _write_private(path: Path, text: str, mode: int) -> None:
     fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
     try:
         try:
-            os.fchmod(fd, mode)          # exact, whatever the umask
+            if hasattr(os, "fchmod"):    # absent on Windows before Python 3.13
+                os.fchmod(fd, mode)      # exact, whatever the umask
             os.write(fd, text.encode("utf-8"))
             os.fsync(fd)
         finally:

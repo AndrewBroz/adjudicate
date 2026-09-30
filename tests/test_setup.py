@@ -332,3 +332,13 @@ def test_check_prints_sources_and_hides_the_key(isolated_llm_config, server, mon
 def test_check_endpoint_that_does_not_answer():
     status, out = check(url="http://127.0.0.1:9/v1", model="m")
     assert status == 1 and "chat ✗" in out
+
+
+def test_write_works_where_os_has_no_fchmod(tmp_path, monkeypatch):
+    # Windows before Python 3.13 has no os.fchmod; the save must still work there.
+    from adjudicate.setup import _write_private
+    monkeypatch.delattr("os.fchmod", raising=False)
+    path = tmp_path / "config.toml"
+    _write_private(path, '[llm]\nurl = "http://a/v1"\n', 0o600)
+    assert path.read_text() == '[llm]\nurl = "http://a/v1"\n'
+    assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
