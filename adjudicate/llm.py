@@ -217,7 +217,10 @@ def list_models_detail(ep: Endpoint, timeout: float = 5.0) -> tuple[list[str] | 
     except Exception as e:
         return None, str(e) or type(e).__name__
     items = data.get("data", []) if isinstance(data, dict) else []
-    return [m["id"] for m in items if isinstance(m, dict) and m.get("id")], ""
+    # A gateway routing any name (LiteLLM lists "*", "openai/*") offers a
+    # pattern, not a model that can be requested.
+    return [m["id"] for m in items
+            if isinstance(m, dict) and m.get("id") and "*" not in m["id"]], ""
 
 
 def list_models(ep: Endpoint, timeout: float = 5.0) -> list[str] | None:

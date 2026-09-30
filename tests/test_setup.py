@@ -342,3 +342,12 @@ def test_write_works_where_os_has_no_fchmod(tmp_path, monkeypatch):
     _write_private(path, '[llm]\nurl = "http://a/v1"\n', 0o600)
     assert path.read_text() == '[llm]\nurl = "http://a/v1"\n'
     assert [p.name for p in tmp_path.iterdir()] == ["config.toml"]
+
+
+def test_wildcard_listing_asks_for_a_model_name(isolated_llm_config, server):
+    # LiteLLM with wildcard routing lists only "*": setup must ask for a name, not offer "*"
+    server.models = ["*"]
+    status, out = setup(["3", server.url, "3", "qwen3.8-27b", "1"])
+    assert status == 0, out
+    assert llm(shared(isolated_llm_config))["model"] == "qwen3.8-27b"
+    assert "1. *" not in out

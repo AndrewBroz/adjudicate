@@ -305,3 +305,16 @@ def test_explicit_ollama_ignores_configured_url(isolated_llm_config, server, mon
     monkeypatch.setenv("OLLAMA_HOST", server.base)
     ep = resolve_endpoint("stylefix", "ollama", model="picked")
     assert (ep.name, ep.model) == ("ollama", "picked")
+
+
+# --- wildcard routes (LiteLLM lists "*" when it forwards any model name) ---
+
+def test_wildcard_ids_are_not_models(server):
+    server.models = ["*", "openai/*", "real-model"]
+    assert resolve_endpoint("stylefix", url=server.url).model == "real-model"
+
+
+def test_only_wildcards_means_no_listed_model(server):
+    server.models = ["*"]
+    with pytest.raises(ConfigError, match="lists none"):
+        resolve_endpoint("stylefix", url=server.url)
