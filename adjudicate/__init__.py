@@ -19,4 +19,4 @@ from .llm import ConfigError, Endpoint, LLMError, resolve_endpoint, strip_thinki
 from .setup import check_endpoint, run_setup  # noqa: F401
 from .dictionary import known, known_anywhere  # noqa: F401
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"

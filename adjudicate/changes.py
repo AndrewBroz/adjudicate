@@ -91,6 +91,54 @@ def _hunks(before: str, after: str):
             yield from _token_hunks(before[pa[i1]:pa[i2]], after[pb[j1]:pb[j2]], pa[i1])
 
 
+def _split_across_annotations(before, after, hunks, hit, pool, label):
+    """The diff aligns repeated words arbitrarily ('recieved the the' -> 'received
+    the' is one hunk 'recieved the' -> 'received'), so an unlabelled hunk can span
+    several annotated edits. Where the annotations that overlap such a hunk, applied
+    to the text around it, give exactly what the diff says, emit their own sub-hunks,
+    each labelled, instead."""
+    out_h: list[Change] = []
+    out_hit: list[bool] = []
+    delta = 0                                       # after-offset minus before-offset
+    floor = 0                                       # end of the previous hunk
+    used: set[int] = set()
+    for c, h in zip(hunks, hit):
+        group = []
+        if not h:
+            for a in pool:
+                if id(a) in used or not a.before:
+                    continue
+                k = before.find(a.before, max(floor, c.start - len(a.before)))
+                if k != -1 and k < c.end and k + len(a.before) > c.start:
+                    group.append((k, a))
+        group.sort(key=lambda t: t[0])
+        ok = len(group) >= 2 and all(group[i][0] + len(group[i][1].before) <= group[i + 1][0]
+                                     for i in range(len(group) - 1))
+        if ok:
+            us = min(c.start, group[0][0])
+            ue = max(c.end, group[-1][0] + len(group[-1][1].before))
+            cand, pos = "", us
+            for k, a in group:
+                cand += before[pos:k] + a.after
+                pos = k + len(a.before)
+            cand += before[pos:ue]
+            ok = us >= floor and after[us + delta:ue + delta + len(c.after) - (c.end - c.start)] == cand
+        if ok:
+            for k, a in group:
+                used.add(id(a))
+                for s, e, new in _hunks(a.before, a.after):
+                    n = Change(k + s, k + e, before[k + s:k + e], new)
+                    label(n, a)
+                    out_h.append(n)
+                    out_hit.append(True)
+        else:
+            out_h.append(c)
+            out_hit.append(h)
+        delta += len(c.after) - (c.end - c.start)
+        floor = c.end
+    return out_h, out_hit
+
+
 def derive_changes(before: str, after: str, annotations=(), default_check: str = "") -> list[Change]:
     """The changes that turn before into after, labelled from annotations
     (each used at most once, matched on exact before/after text, in order;
@@ -113,6 +161,7 @@ def derive_changes(before: str, after: str, annotations=(), default_check: str =
                 break
     # Then an annotation's own minimal sub-hunks ('third party' -> 'third-party'
     # is the single hunk ' ' -> '-'); each sub-pair labels one hunk.
+    spent: set[int] = set()
     subs = [(a, [(a.before[s:e], new) for s, e, new in _hunks(a.before, a.after)]) for a in pool]
     for i, c in enumerate(hunks):
         if hit[i]:
@@ -121,8 +170,11 @@ def derive_changes(before: str, after: str, annotations=(), default_check: str =
             if (c.before, c.after) in pairs:
                 pairs.remove((c.before, c.after))
                 label(c, a)
+                spent.add(id(a))
                 hit[i] = True
                 break
+    hunks, hit = _split_across_annotations(before, after, hunks, hit,
+                                           [a for a, _ in subs if id(a) not in spent], label)
     out: list[Change] = []
     labelled: list[bool] = []
     for c, h in zip(hunks, hit):

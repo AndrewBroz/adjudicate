@@ -156,3 +156,23 @@ def test_sub_hunk_label_not_given_to_unrelated_hunk():
     ann = [Annotation("third party", "third-party", "adjudicated", "stub", "model", 0.9)]
     cs = derive_changes("x y. third party", "x z. third-party", ann, "x")
     assert [(c.before, c.after, c.decided_by) for c in cs] == [("y", "z", "rule"), (" ", "-", "model")]
+
+
+def test_typo_next_to_a_doubled_word_is_two_labelled_changes():
+    before = "We recieved the the new colour scheme.\n"
+    after = "We received the new colour scheme.\n"
+    ann = [Annotation("recieved", "received", "typos"),
+           Annotation("the the", "the", "ENGLISH_WORD_REPEAT_RULE")]
+    changes = derive_changes(before, after, ann, "proofix")
+    assert [(c.before.strip(), c.after, c.check) for c in changes] == [
+        ("recieved", "received", "typos"), ("the", "", "ENGLISH_WORD_REPEAT_RULE")]
+    assert apply_changes(before, changes) == after
+
+
+def test_adjacent_annotated_edits_split_whatever_the_diff_aligns():
+    before = "an the the end\n"
+    after = "a the end\n"
+    ann = [Annotation("an", "a", "A_AN"), Annotation("the the", "the", "REPEAT")]
+    changes = derive_changes(before, after, ann, "x")
+    assert sorted(c.check for c in changes) == ["A_AN", "REPEAT"]
+    assert apply_changes(before, changes) == after
