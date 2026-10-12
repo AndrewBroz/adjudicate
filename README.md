@@ -17,7 +17,11 @@ pip install adjudicate
 
 Modules: `llm` (OpenAI-compatible client and endpoint resolution), `core`
 (Item, Decision, Cache, `adjudicate`), `apply` (Edit, `apply_edits`),
-`context` (sentence context, Markdown prose regions), `dictionary`
+`context` (sentence context, Markdown prose regions; protected spans cover
+code, front matter, links, HTML and, for Obsidian, wikilinks and embeds,
+`%%comments%%`, `#tags`, `$maths$`, callout markers and `^block-ids`),
+`changes` (derive, apply and compose labelled changes between texts),
+`dictionary`
 (Hunspell lookups over the bundled en_US and en_GB dictionaries), `setup`
 (`run_setup` and `check_endpoint`, behind the tools' `--setup` and
 `--check-endpoint`).

@@ -1,0 +1,100 @@
+import random
+
+import pytest
+
+from adjudicate import Annotation, Change, apply_changes, compose, derive_changes
+
+
+def test_word_change_is_one_labelled_hunk():
+    before, after = "The license was granted.\n", "The licence was granted.\n"
+    [c] = derive_changes(before, after, [Annotation("license", "licence", "ToUK.Variants",
+                                                     "noun", "model", 0.9)])
+    assert (c.start, c.end, c.before, c.after) == (4, 11, "license", "licence")
+    assert (c.check, c.decided_by, c.confidence, c.reason) == ("ToUK.Variants", "model", 0.9, "noun")
+
+
+def test_unlabelled_hunk_gets_default_check():
+    [c] = derive_changes('say "hi"', "say “hi”", default_check="punctuation")
+    assert c.check == "punctuation" and c.decided_by == "rule"
+
+
+def test_inserted_comma():
+    [c] = derive_changes("red, white and blue", "red, white, and blue",
+                         [Annotation("", ",", "Chicago.SerialComma", decided_by="model")])
+    assert (c.before, c.after, c.check) == ("", ",", "Chicago.SerialComma")
+
+
+def test_crlf_round_trip():
+    before = "one\r\ntwo colour\r\nthree\r\n"
+    after = "one\ntwo color\nthree\n"
+    assert apply_changes(before, derive_changes(before, after)) == after
+
+
+def _mutate(rng, text):
+    words = text.split(" ")
+    for _ in range(rng.randint(0, 6)):
+        i = rng.randrange(len(words))
+        op = rng.choice(["swap", "del", "ins", "punct"])
+        if op == "swap":
+            words[i] = words[i][::-1]
+        elif op == "del" and len(words) > 1:
+            words.pop(i)
+        elif op == "ins":
+            words.insert(i, rng.choice(["new", "x,", "“q”", "\U0001F600"]))
+        else:
+            words[i] += rng.choice([",", ";", "—"])
+    return " ".join(words)
+
+
+BASE = ("Alpha beta, gamma delta.\nEpsilon zeta eta theta iota.\n\n"
+        "Kappa lambda mu nu xi omicron pi.\nRho sigma tau upsilon.\n")
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_derive_is_faithful(seed):
+    rng = random.Random(seed)
+    after = _mutate(rng, BASE)
+    changes = derive_changes(BASE, after)
+    assert apply_changes(BASE, changes) == after
+    spans = sorted((c.start, c.end) for c in changes)
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))   # disjoint
+
+
+def _ids(changes, prefix):
+    for n, c in enumerate(changes, 1):
+        c.id, c.pass_ = f"{prefix}{n}", prefix
+    return changes
+
+
+@pytest.mark.parametrize("seed", range(200))
+def test_compose_is_faithful(seed):
+    rng = random.Random(seed)
+    middle = _mutate(rng, BASE)
+    final = _mutate(rng, middle)
+    first = _ids(derive_changes(BASE, middle), "s")
+    second = _ids(derive_changes(middle, final), "p")
+    allc = compose(BASE, middle, first, second)
+    assert apply_changes(BASE, allc) == final
+    # rejecting every second-pass change gives the middle text
+    firsts_only = [c for c in allc if c.pass_ == "s"]
+    assert apply_changes(BASE, firsts_only) == middle
+
+
+def test_rejecting_a_dependency_drops_its_dependents():
+    original = "The colour is nice\n"
+    middle = "The color is nice\n"            # stylefix
+    final = "The colours is nice\n"           # proofix changed the word stylefix changed
+    first = _ids(derive_changes(original, middle), "s")
+    second = _ids(derive_changes(middle, final), "p")
+    allc = compose(original, middle, first, second)
+    merged = [c for c in allc if c.depends_on]
+    assert merged and merged[0].depends_on == ("s1",)
+    assert apply_changes(original, allc) == final
+    # a valid selection without s1 must also drop everything depending on it
+    keep = [c for c in allc if c.id != "s1" and "s1" not in c.depends_on]
+    assert apply_changes(original, keep) == original
+
+
+def test_apply_rejects_stale_change():
+    with pytest.raises(ValueError):
+        apply_changes("abc", [Change(0, 1, "x", "y")])
