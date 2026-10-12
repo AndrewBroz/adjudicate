@@ -15,6 +15,17 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _HTML_TAG = re.compile(r"</?[A-Za-z][^<>\n]*>")
 HTML_ENTITY = re.compile(r"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
 
+# Obsidian syntax. Tags start with a letter so "#42" and headings ("# x") stay prose;
+# inline maths needs non-space just inside both dollars and no digit after the
+# closing one, so "$5 and $10" stays prose.
+WIKILINK = re.compile(r"!?\[\[[^\[\]\n]+\]\]")
+OBSIDIAN_COMMENT = re.compile(r"%%.*?%%", re.S)
+TAG = re.compile(r"(?<![\w&/#])#[A-Za-z][\w/-]*")
+BLOCK_ID = re.compile(r"(?<=\s)\^[A-Za-z0-9-]+[ \t]*$", re.M)
+CALLOUT = re.compile(r"^[ \t]*(?:>[ \t]*)+\[![^\]\n]+\][+-]?", re.M)
+MATH_BLOCK = re.compile(r"\$\$.*?\$\$", re.S)
+MATH_INLINE = re.compile(r"(?<![\\$\w])\$(?=\S)[^$\n]*?(?<=\S)\$(?![\w$])")
+
 # Pre-0.3 names, kept so an old consumer does not break mid-upgrade; removed in 0.4.
 _FENCE, _FRONT, _HTML_ENTITY = FENCE, FRONT_MATTER, HTML_ENTITY
 
@@ -34,13 +45,15 @@ class _Unused:
 
 def protected_spans(text: str, entities: bool = True) -> list[tuple[int, int]]:
     """Spans no tool should edit: front matter, fenced and inline code, link
-    targets, URLs, HTML comments and tags, and (unless entities=False) HTML
-    entities."""
+    targets, URLs, HTML comments and tags, HTML entities, and Obsidian syntax
+    (wikilinks/embeds, comments, tags, block ids, callout markers, inline and
+    block maths)."""
     spans = []
     m = FRONT_MATTER.match(text)
     if m:
         spans.append((0, m.end()))
-    rxs = [FENCE, _INLINE_CODE, _LINK_DEST, _URL, _HTML_COMMENT, _HTML_TAG]
+    rxs = [FENCE, _INLINE_CODE, _LINK_DEST, _URL, _HTML_COMMENT, _HTML_TAG,
+           WIKILINK, OBSIDIAN_COMMENT, TAG, BLOCK_ID, CALLOUT, MATH_BLOCK, MATH_INLINE]
     if entities:
         rxs.append(HTML_ENTITY)
     for rx in rxs:

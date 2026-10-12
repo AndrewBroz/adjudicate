@@ -54,3 +54,39 @@ def test_public_regex_names():
     assert adjudicate.HTML_ENTITY is context.HTML_ENTITY is context._HTML_ENTITY
     assert context.FRONT_MATTER.match("---\ntitle: x\n---\nbody")
     assert context.HTML_ENTITY.fullmatch("&mdash;")
+
+
+from adjudicate.context import protected_spans
+
+
+def protected(text):
+    return [text[s:e] for s, e in protected_spans(text)]
+
+
+def test_obsidian_constructs_are_protected():
+    text = ("See [[Some Note|the colour note]] and ![[diagram.png]].\n"
+            "Tagged #draft and #area/policy here.\n"
+            "Hidden %%a private colour remark%% inline.\n"
+            "A paragraph with an id ^para-1\n"
+            "> [!note] Colour matters\n"
+            "Inline $a_colour + b$ maths.\n"
+            "$$\ncolour = 1\n$$\n")
+    got = protected(text)
+    for piece in ["[[Some Note|the colour note]]", "![[diagram.png]]", "#draft", "#area/policy",
+                  "%%a private colour remark%%", "^para-1", "> [!note]", "$a_colour + b$",
+                  "$$\ncolour = 1\n$$"]:
+        assert any(piece in g for g in got), piece
+    # the callout's title text stays prose
+    assert not any("Colour matters" in g for g in got)
+
+
+def test_near_misses_stay_prose():
+    text = "# Heading\nSee issue #42, the C# guide, page#anchor, and it costs $5 and $10.\n"
+    got = protected(text)
+    for prose in ["# Heading", "#42", "C#", "$5", "$10"]:
+        assert not any(prose in g for g in got), (prose, got)
+
+
+def test_multiline_obsidian_comment():
+    text = "Before %%line one\nline two%% after.\n"
+    assert "%%line one\nline two%%" in protected(text)
