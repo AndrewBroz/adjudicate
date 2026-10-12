@@ -98,3 +98,39 @@ def test_rejecting_a_dependency_drops_its_dependents():
 def test_apply_rejects_stale_change():
     with pytest.raises(ValueError):
         apply_changes("abc", [Change(0, 1, "x", "y")])
+
+
+def test_many_crlf_lines_derive_fast():
+    import time
+    before = "".join(f"Line {i} of some plain prose, with colour and words.\r\n" for i in range(1000))
+    after = before.replace("\r\n", "\n")
+    t = time.perf_counter()
+    changes = derive_changes(before, after)
+    assert time.perf_counter() - t < 1.0
+    assert apply_changes(before, changes) == after
+
+
+def test_unrelated_fix_does_not_depend_on_adjacent_insertion():
+    original = "red, whte and blue"
+    middle = "red, whte, and blue"           # serial comma
+    final = "red, white, and blue"           # typo fix
+    first = _ids(derive_changes(original, middle), "s")
+    second = _ids(derive_changes(middle, final), "p")
+    allc = compose(original, middle, first, second)
+    p1 = [c for c in allc if c.id == "p1"][0]
+    assert p1.depends_on == ()
+    assert apply_changes(original, allc) == final
+
+
+@pytest.mark.parametrize("before, after, word", [
+    ('the colour."', "the color.”", "colour"),
+    ('"colourful"', "“colorful”", "colourful"),
+    ("colour's", "color’s", "colour"),
+    ("colour,", "color;", "colour"),
+])
+def test_model_label_survives_adjacent_punctuation(before, after, word):
+    new = word.replace("colour", "color")
+    cs = derive_changes(before, after, [Annotation(word, new, "ToUS.Variants", decided_by="model")])
+    assert apply_changes(before, cs) == after
+    [c] = [c for c in cs if c.before == word]
+    assert (c.check, c.decided_by) == ("ToUS.Variants", "model")

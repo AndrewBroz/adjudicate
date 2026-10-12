@@ -67,7 +67,13 @@ def _token_hunks(a: str, b: str, base: int):
     ta, tb = _TOKEN.findall(a), _TOKEN.findall(b)
     oa, ob = _starts(ta), _starts(tb)
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, ta, tb, autojunk=False).get_opcodes():
-        if tag != "equal":
+        if tag == "equal":
+            continue
+        if tag == "replace" and i2 - i1 == j2 - j1:      # one hunk per differing token pair
+            for k in range(i2 - i1):
+                if ta[i1 + k] != tb[j1 + k]:
+                    yield base + oa[i1 + k], base + oa[i1 + k + 1], tb[j1 + k]
+        else:
             yield base + oa[i1], base + oa[i2], b[ob[j1]:ob[j2]]
 
 
@@ -75,35 +81,41 @@ def _hunks(before: str, after: str):
     la, lb = before.splitlines(keepends=True), after.splitlines(keepends=True)
     pa, pb = _starts(la), _starts(lb)
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, la, lb, autojunk=False).get_opcodes():
-        if tag != "equal":
+        if tag == "equal":
+            continue
+        if tag == "replace" and i2 - i1 == j2 - j1:      # line pairs: avoids one huge token diff
+            for k in range(i2 - i1):
+                yield from _token_hunks(before[pa[i1 + k]:pa[i1 + k + 1]],
+                                        after[pb[j1 + k]:pb[j1 + k + 1]], pa[i1 + k])
+        else:
             yield from _token_hunks(before[pa[i1]:pa[i2]], after[pb[j1]:pb[j2]], pa[i1])
-
-
-def _merge_in_word(before: str, hunks: list[tuple[int, int, str]]):
-    """Join hunks with no whitespace between them (both quotes of "hi", say),
-    so one word's edit is one change."""
-    out: list[tuple[int, int, str]] = []
-    for s, e, new in hunks:
-        if out and not any(ch.isspace() for ch in before[out[-1][1]:s]):
-            ps, pe, pnew = out.pop()
-            s, new = ps, pnew + before[pe:s] + new
-        out.append((s, e, new))
-    return out
 
 
 def derive_changes(before: str, after: str, annotations=(), default_check: str = "") -> list[Change]:
     """The changes that turn before into after, labelled from annotations
-    (each used at most once, matched on exact before/after text, in order)."""
+    (each used at most once, matched on exact before/after text, in order).
+    Adjacent unlabelled hunks with no whitespace between them are joined, so
+    one word's punctuation edit (both quotes of "hi") is one change."""
     pool = list(annotations)
-    out = []
-    for s, e, new in _merge_in_word(before, list(_hunks(before, after))):
+    out: list[Change] = []
+    labelled: list[bool] = []
+    for s, e, new in _hunks(before, after):
         c = Change(s, e, before[s:e], new, check=default_check)
+        hit = False
         for k, a in enumerate(pool):
             if a.before == c.before and a.after == c.after:
                 c.check, c.reason, c.decided_by, c.confidence = a.check, a.reason, a.decided_by, a.confidence
                 del pool[k]
+                hit = True
                 break
+        if (not hit and out and not labelled[-1]
+                and not any(ch.isspace() for ch in before[out[-1].end:s])):
+            p = out[-1]
+            p.after += before[p.end:s] + new
+            p.end, p.before = e, before[p.start:e]
+            continue
         out.append(c)
+        labelled.append(hit)
     return out
 
 
@@ -175,7 +187,7 @@ def compose(original: str, middle: str, first: list[Change], second: list[Change
     for s in sorted(second, key=lambda c: (c.start, c.end)):
         hit = {k for k, (ms, me, f) in enumerate(mid)
                if _overlaps(s.start, s.end, ms, me)
-               or (f.start == f.end and s.start <= me and ms <= s.end)}   # touching an insertion
+               or (f.start == f.end and s.start == s.end and ms <= s.start <= me)}   # same-spot insertions
         if group_s and not (hit & group_f):
             flush()
         group_s.append(s)
