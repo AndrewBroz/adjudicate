@@ -93,29 +93,47 @@ def _hunks(before: str, after: str):
 
 def derive_changes(before: str, after: str, annotations=(), default_check: str = "") -> list[Change]:
     """The changes that turn before into after, labelled from annotations
-    (each used at most once, matched on exact before/after text, in order).
+    (each used at most once, matched on exact before/after text, in order;
+    failing that, on one of the annotation's own sub-hunks).
     Adjacent unlabelled hunks with no whitespace between them are joined, so
     one word's punctuation edit (both quotes of "hi") is one change."""
     pool = list(annotations)
-    out: list[Change] = []
-    labelled: list[bool] = []
-    for s, e, new in _hunks(before, after):
-        c = Change(s, e, before[s:e], new, check=default_check)
-        hit = False
+    hunks = [Change(s, e, before[s:e], new, check=default_check) for s, e, new in _hunks(before, after)]
+    hit = [False] * len(hunks)
+
+    def label(c: Change, a) -> None:
+        c.check, c.reason, c.decided_by, c.confidence = a.check, a.reason, a.decided_by, a.confidence
+
+    for i, c in enumerate(hunks):                  # exact (before, after) first
         for k, a in enumerate(pool):
             if a.before == c.before and a.after == c.after:
-                c.check, c.reason, c.decided_by, c.confidence = a.check, a.reason, a.decided_by, a.confidence
+                label(c, a)
                 del pool[k]
-                hit = True
+                hit[i] = True
                 break
-        if (not hit and out and not labelled[-1]
-                and not any(ch.isspace() for ch in before[out[-1].end:s])):
+    # Then an annotation's own minimal sub-hunks ('third party' -> 'third-party'
+    # is the single hunk ' ' -> '-'); each sub-pair labels one hunk.
+    subs = [(a, [(a.before[s:e], new) for s, e, new in _hunks(a.before, a.after)]) for a in pool]
+    for i, c in enumerate(hunks):
+        if hit[i]:
+            continue
+        for a, pairs in subs:
+            if (c.before, c.after) in pairs:
+                pairs.remove((c.before, c.after))
+                label(c, a)
+                hit[i] = True
+                break
+    out: list[Change] = []
+    labelled: list[bool] = []
+    for c, h in zip(hunks, hit):
+        if (not h and out and not labelled[-1]
+                and not any(ch.isspace() for ch in before[out[-1].end:c.start])):
             p = out[-1]
-            p.after += before[p.end:s] + new
-            p.end, p.before = e, before[p.start:e]
+            p.after += before[p.end:c.start] + c.after
+            p.end, p.before = c.end, before[p.start:c.end]
             continue
         out.append(c)
-        labelled.append(hit)
+        labelled.append(h)
     return out
 
 

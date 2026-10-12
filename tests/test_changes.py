@@ -134,3 +134,25 @@ def test_model_label_survives_adjacent_punctuation(before, after, word):
     assert apply_changes(before, cs) == after
     [c] = [c for c in cs if c.before == word]
     assert (c.check, c.decided_by) == ("ToUS.Variants", "model")
+
+
+def test_annotation_labels_its_sub_hunk():
+    from adjudicate import Annotation, derive_changes
+    ann = [Annotation("third party", "third-party", "adjudicated", "stub", "model", 0.9)]
+    cs = derive_changes("a third party risk", "a third-party risk", ann, "x")
+    assert len(cs) == 1 and (cs[0].before, cs[0].after) == (" ", "-")
+    assert (cs[0].check, cs[0].reason, cs[0].decided_by, cs[0].confidence) == ("adjudicated", "stub", "model", 0.9)
+
+
+def test_whole_phrase_still_labels_whole():
+    from adjudicate import Annotation, derive_changes
+    ann = [Annotation("a lot", "many", "g", "r", "model", 0.8)]
+    cs = derive_changes("a lot of cats", "many of cats", ann, "x")
+    assert len(cs) == 1 and cs[0].before == "a lot" and cs[0].decided_by == "model"
+
+
+def test_sub_hunk_label_not_given_to_unrelated_hunk():
+    from adjudicate import Annotation, derive_changes
+    ann = [Annotation("third party", "third-party", "adjudicated", "stub", "model", 0.9)]
+    cs = derive_changes("x y. third party", "x z. third-party", ann, "x")
+    assert [(c.before, c.after, c.decided_by) for c in cs] == [("y", "z", "rule"), (" ", "-", "model")]
