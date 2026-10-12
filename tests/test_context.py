@@ -90,3 +90,19 @@ def test_near_misses_stay_prose():
 def test_multiline_obsidian_comment():
     text = "Before %%line one\nline two%% after.\n"
     assert "%%line one\nline two%%" in protected(text)
+
+
+def test_inside_quotes_ignores_curled_apostrophes_between_letters():
+    text = "As the Defence Ministry’s report put it, “the colour scheme was unauthorised”.\n"
+    assert inside_quotes(text, text.index("colour"))
+    assert inside_quotes(text, text.index("unauthorised"))
+    text2 = "They didn’t say ‘the colour’ and it’s colour.\n"
+    assert inside_quotes(text2, text2.index("colour"))
+    assert not inside_quotes(text2, text2.rindex("colour"))
+
+
+def test_front_matter_after_a_byte_order_mark_is_protected():
+    from adjudicate.context import FRONT_MATTER, protected_spans
+    text = "\ufeff---\ntitle: Colour -- draft\n---\n\nBody colour.\n"
+    assert FRONT_MATTER.match(text)
+    assert protected_spans(text)[0] == (0, text.index("\n\nBody") + 1)

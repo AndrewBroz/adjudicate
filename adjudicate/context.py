@@ -10,7 +10,7 @@ FENCE = re.compile(r"^(```|~~~)[^\n]*\n.*?^\1[ \t]*$", re.M | re.S)
 _INLINE_CODE = re.compile(r"(`+)[^`\n]*?\1")
 _LINK_DEST = re.compile(r"\]\([^)\s]*(?:\s+\"[^\"]*\")?\)")
 _URL = re.compile(r"<?(?:https?|ftp|mailto):[^\s>)]+>?")
-FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.S)
+FRONT_MATTER = re.compile(r"\A\ufeff?---\n.*?\n---\n", re.S)  # an optional byte-order mark first
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _HTML_TAG = re.compile(r"</?[A-Za-z][^<>\n]*>")
 HTML_ENTITY = re.compile(r"&(?:#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
@@ -142,11 +142,16 @@ def at_sentence_start(text: str, pos: int) -> bool:
     return before[-1] in _SENTENCE_START_PUNCT
 
 
+_APOSTROPHE = re.compile(r"(?<=\w)’(?=\w)")
+
+
 def inside_quotes(text: str, pos: int) -> bool:
     """Cheap check: an odd number of opening quotes precede `pos` in the paragraph."""
     ps, _ = paragraph_bounds(text, pos)
     seg = text[ps:pos]
     opens = seg.count("“") + seg.count("‘") + len(re.findall(r'(?:^|\s)["\']', seg))
     # `seg` ends where the word starts, so a quote at its very end is an opener.
-    closes = seg.count("”") + seg.count("’") + len(re.findall(r'["\'](?=[\s.,;:!?)])', seg))
+    # A curled apostrophe between letters (Ministry’s, don’t) closes nothing.
+    closes = (seg.count("”") + seg.count("’") - len(_APOSTROPHE.findall(seg))
+              + len(re.findall(r'["\'](?=[\s.,;:!?)])', seg)))
     return opens > closes
