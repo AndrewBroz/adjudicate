@@ -176,3 +176,33 @@ def test_adjacent_annotated_edits_split_whatever_the_diff_aligns():
     changes = derive_changes(before, after, ann, "x")
     assert sorted(c.check for c in changes) == ["A_AN", "REPEAT"]
     assert apply_changes(before, changes) == after
+
+
+@pytest.mark.parametrize("before, after, ann", [
+    ("How do you know that that is wrong?\n", "How do you know that is wrong?\n",
+     Annotation("that that", "that", "adjudicated", "a typo", "model", 0.9)),
+    ("I had had enough.\n", "I had enough.\n",
+     Annotation("had had", "had", "adjudicated", "a typo", "model", 0.9)),
+    ("Turn it on on Monday.\n", "Turn it on Monday.\n", Annotation("on on", "on", "basics")),
+])
+def test_one_annotation_labels_a_deletion_the_diff_placed_at_the_other_copy(before, after, ann):
+    # difflib deletes the first copy and its space; the annotation's own sub-hunk deletes
+    # the space and the second copy: the same edit, so the annotation labels it.
+    [c] = derive_changes(before, after, [ann], "proofix")
+    assert (c.check, c.reason, c.decided_by) == (ann.check, ann.reason, ann.decided_by)
+    assert apply_changes(before, [c]) == after
+
+
+def test_typo_before_a_doubled_word_keeps_both_labels():
+    before = "Fix teh the the bug.\n"
+    after = "Fix the the bug.\n"
+    ann = [Annotation("teh", "the", "typos"), Annotation("the the", "the", "basics")]
+    changes = derive_changes(before, after, ann, "proofix")
+    assert [(c.before.strip(), c.after, c.check) for c in changes] == [
+        ("teh", "the", "typos"), ("the", "", "basics")]
+    assert apply_changes(before, changes) == after
+
+
+def test_single_annotation_does_not_label_a_hunk_it_does_not_reproduce():
+    cs = derive_changes("say that now\n", "say this now\n", [Annotation("that that", "that", "x")], "d")
+    assert [(c.before, c.after, c.check) for c in cs] == [("that", "this", "d")]

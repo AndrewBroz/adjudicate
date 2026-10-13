@@ -92,51 +92,85 @@ def _hunks(before: str, after: str):
 
 
 def _split_across_annotations(before, after, hunks, hit, pool, label):
-    """The diff aligns repeated words arbitrarily ('recieved the the' -> 'received
-    the' is one hunk 'recieved the' -> 'received'), so an unlabelled hunk can span
-    several annotated edits. Where the annotations that overlap such a hunk, applied
-    to the text around it, give exactly what the diff says, emit their own sub-hunks,
-    each labelled, instead."""
+    """The diff aligns repeated words arbitrarily: 'recieved the the' -> 'received
+    the' is one hunk 'recieved the' -> 'received', and 'that that is' -> 'that is'
+    deletes the first copy where the annotation's own edit deletes the second. So an
+    unlabelled hunk is relabelled from the annotations around it: those overlapping it
+    (and, failing that, also those separated from it by at most one space), taken
+    with any other unlabelled hunks they reach, when applying them to the text of
+    that region gives exactly what the diff says. Each annotation then emits its own
+    sub-hunks, labelled. One annotation is enough: the check is the reproduction."""
     out_h: list[Change] = []
     out_hit: list[bool] = []
-    delta = 0                                       # after-offset minus before-offset
-    floor = 0                                       # end of the previous hunk
+    deltas = [0]                                    # after-offset minus before-offset, before hunk i
+    for c in hunks:
+        deltas.append(deltas[-1] + len(c.after) - (c.end - c.start))
+    floor = 0                                       # end of the previous emitted region
     used: set[int] = set()
-    for c, h in zip(hunks, hit):
-        group = []
-        if not h:
-            for a in pool:
-                if id(a) in used or not a.before:
-                    continue
-                k = before.find(a.before, max(floor, c.start - len(a.before)))
-                if k != -1 and k < c.end and k + len(a.before) > c.start:
-                    group.append((k, a))
-        group.sort(key=lambda t: t[0])
-        ok = len(group) >= 2 and all(group[i][0] + len(group[i][1].before) <= group[i + 1][0]
-                                     for i in range(len(group) - 1))
-        if ok:
-            us = min(c.start, group[0][0])
-            ue = max(c.end, group[-1][0] + len(group[-1][1].before))
-            cand, pos = "", us
-            for k, a in group:
-                cand += before[pos:k] + a.after
-                pos = k + len(a.before)
-            cand += before[pos:ue]
-            ok = us >= floor and after[us + delta:ue + delta + len(c.after) - (c.end - c.start)] == cand
-        if ok:
-            for k, a in group:
-                used.add(id(a))
-                for s, e, new in _hunks(a.before, a.after):
-                    n = Change(k + s, k + e, before[k + s:k + e], new)
-                    label(n, a)
-                    out_h.append(n)
-                    out_hit.append(True)
-        else:
+    i = 0
+    while i < len(hunks):
+        c, h = hunks[i], hit[i]
+        found = None if h else (_region(before, after, hunks, hit, pool, used, i, floor, deltas, False)
+                                or _region(before, after, hunks, hit, pool, used, i, floor, deltas, True))
+        if found is None:
             out_h.append(c)
             out_hit.append(h)
-        delta += len(c.after) - (c.end - c.start)
-        floor = c.end
+            floor = c.end
+            i += 1
+            continue
+        group, j, ue = found
+        for k, a in group:
+            used.add(id(a))
+            for s, e, new in _hunks(a.before, a.after):
+                n = Change(k + s, k + e, before[k + s:k + e], new)
+                label(n, a)
+                out_h.append(n)
+                out_hit.append(True)
+        floor = ue
+        i = j + 1
     return out_h, out_hit
+
+
+def _region(before, after, hunks, hit, pool, used, i, floor, deltas, touching):
+    """(group [(offset, annotation)], last hunk index, region end) for unlabelled hunk i,
+    or None. See _split_across_annotations."""
+    us, ue, j = hunks[i].start, hunks[i].end, i
+    group: dict[int, tuple[int, object]] = {}
+    gap = 1 if touching else 0
+    grew = True
+    while grew:
+        grew = False
+        for a in pool:
+            if id(a) in used or id(a) in group or not a.before:
+                continue
+            k = before.find(a.before, max(floor, us - len(a.before) - gap))
+            if k == -1 or k > ue + gap or k + len(a.before) < us - gap:
+                continue
+            if not (k < ue and k + len(a.before) > us):        # beside the region, not over it
+                if not touching or not before[min(ue, k + len(a.before)):max(us, k)].isspace():
+                    continue
+            group[id(a)] = (k, a)
+            us, ue = min(us, k), max(ue, k + len(a.before))
+            grew = True
+        while j + 1 < len(hunks) and hunks[j + 1].start < ue:
+            if hit[j + 1]:
+                return None                     # a labelled hunk inside the region: leave it be
+            j += 1
+            ue = max(ue, hunks[j].end)
+            grew = True
+    if not group or us < floor or (j + 1 < len(hunks) and hunks[j + 1].start < ue):
+        return None
+    items = sorted(group.values(), key=lambda t: t[0])
+    if any(items[n][0] + len(items[n][1].before) > items[n + 1][0] for n in range(len(items) - 1)):
+        return None
+    cand, pos = "", us
+    for k, a in items:
+        cand += before[pos:k] + a.after
+        pos = k + len(a.before)
+    cand += before[pos:ue]
+    if after[us + deltas[i]:ue + deltas[j + 1]] != cand:
+        return None
+    return items, j, ue
 
 
 def derive_changes(before: str, after: str, annotations=(), default_check: str = "") -> list[Change]:
