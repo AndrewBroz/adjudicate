@@ -149,6 +149,8 @@ def _region(before, after, hunks, hit, pool, used, i, floor, deltas, touching):
             if not (k < ue and k + len(a.before) > us):        # beside the region, not over it
                 if not touching or not before[min(ue, k + len(a.before)):max(us, k)].isspace():
                     continue
+            if any(k < g + len(b.before) and g < k + len(a.before) for g, b in group.values()):
+                continue        # the same edit annotated twice (a decision and its edit): the first labels
             group[id(a)] = (k, a)
             us, ue = min(us, k), max(ue, k + len(a.before))
             grew = True

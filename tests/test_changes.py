@@ -206,3 +206,12 @@ def test_typo_before_a_doubled_word_keeps_both_labels():
 def test_single_annotation_does_not_label_a_hunk_it_does_not_reproduce():
     cs = derive_changes("say that now\n", "say this now\n", [Annotation("that that", "that", "x")], "d")
     assert [(c.before, c.after, c.check) for c in cs] == [("that", "this", "d")]
+
+
+def test_duplicate_annotations_of_one_edit_still_label_it():
+    # proofix annotates a model's edit twice: from the decision and from the applied edit
+    before, after = "How do you know that that is wrong?\n", "How do you know that is wrong?\n"
+    ann = [Annotation("that that", "that", "adjudicated", "a typo", "model", 0.9),
+           Annotation("that that", "that", "adjudicated")]
+    [c] = derive_changes(before, after, ann, "proofix")
+    assert (c.check, c.reason, c.decided_by) == ("adjudicated", "a typo", "model")
