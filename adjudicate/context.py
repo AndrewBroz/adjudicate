@@ -43,8 +43,40 @@ class _Unused:
         return {k: v for k, v in self.__dict__.items() if v}
 
 
+_LIST_ITEM = re.compile(r"[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
+
+
+def indented_code(text: str) -> list[tuple[int, int]]:
+    """Indented code blocks: lines indented four spaces or a tab, after a blank line (or
+    at the start), not inside a list (where such a line continues the item)."""
+    out: list[tuple[int, int]] = []
+    pos, start, prev_blank, in_list = 0, None, True, False
+    for ln in text.splitlines(keepends=True):
+        body = ln.rstrip("\r\n")
+        blank = not body.strip()
+        indented = not blank and body.startswith(("    ", "\t"))
+        if start is not None:
+            if indented:
+                pos += len(ln)
+                continue
+            out.append((start, pos))
+            start = None
+        if indented and prev_blank and not in_list:
+            start = pos
+        elif not blank:
+            if _LIST_ITEM.match(body):
+                in_list = True
+            elif not body[:1].isspace() and prev_blank:
+                in_list = False             # a new paragraph after a blank line ends the list
+        prev_blank = blank
+        pos += len(ln)
+    if start is not None:
+        out.append((start, pos))
+    return out
+
+
 def protected_spans(text: str, entities: bool = True) -> list[tuple[int, int]]:
-    """Spans no tool should edit: front matter, fenced and inline code, link
+    """Spans no tool should edit: front matter, fenced, indented and inline code, link
     targets, URLs, HTML comments and tags, HTML entities, and Obsidian syntax
     (wikilinks/embeds, comments, tags, block ids, callout markers, inline and
     block maths)."""
@@ -58,6 +90,7 @@ def protected_spans(text: str, entities: bool = True) -> list[tuple[int, int]]:
         rxs.append(HTML_ENTITY)
     for rx in rxs:
         spans.extend(m.span() for m in rx.finditer(text))
+    spans.extend(indented_code(text))
     spans.sort()
     merged: list[tuple[int, int]] = []
     for s, e in spans:

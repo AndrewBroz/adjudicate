@@ -106,3 +106,29 @@ def test_front_matter_after_a_byte_order_mark_is_protected():
     text = "\ufeff---\ntitle: Colour -- draft\n---\n\nBody colour.\n"
     assert FRONT_MATTER.match(text)
     assert protected_spans(text)[0] == (0, text.index("\n\nBody") + 1)
+
+
+def _protected(text):
+    return [text[s:e] for s, e in protected_spans(text)]
+
+
+def test_indented_code_block_after_a_blank_line_is_protected():
+    text = "Some prose.\n\n    print(a,b)\n    # of of\n\nMore prose.\n"
+    assert _protected(text) == ["    print(a,b)\n    # of of\n"]
+    tab = "Prose.\n\n\tx = recieve(a)\n"
+    assert _protected(tab) == ["\tx = recieve(a)\n"]
+    crlf = "Prose.\r\n\r\n    the the\r\nMore.\r\n"
+    assert _protected(crlf) == ["    the the\r\n"]
+    assert _protected("    code at the start\n\nProse.\n") == ["    code at the start\n"]
+
+
+def test_indented_lines_that_are_not_code_stay_prose():
+    # continues a paragraph (no blank line before it)
+    assert _protected("Prose that\n    continues here.\n") == []
+    # a list item's continuation paragraph
+    assert _protected("- item one\n\n    more about item one\n") == []
+    assert _protected("1. first\n   wrapped\n\n    more of the first\n") == []
+    # three spaces is not enough
+    assert _protected("Prose.\n\n   not code\n") == []
+    # a new paragraph ends the list: indented text after it is code again
+    assert _protected("- item\n\nProse.\n\n    code\n") == ["    code\n"]
